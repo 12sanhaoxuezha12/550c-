@@ -1,0 +1,687 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>硬件监控</title>
+<!--
+  骨架照搬 GameHud「性能监测」面板：
+    顶栏（标题 + 状态 + 时钟）
+    左列(1.5fr)：顶部 4 个 KPI → 两个大折线卡 → 底部横排（进程 / 磁盘·网络 / 系统）
+    右列(1fr)  ：CPU 详情 / GPU 详情 / 内存详情
+  "读得到才显示"这条原则在固定骨架里的落法：
+    · 右列与底部的整卡：没有任何数据显示 → 整卡隐藏，布局自动重排
+    · KPI：位置是固定的 4 格，读不到就显示 "--"（不估算、不补零）
+  皮肤：只保留一套 —— 面板（数值照抄 GameHud monitor.html）
+-->
+<style>
+:root{
+  /* 皮肤 1：面板 —— 数值照抄 GameHud monitor.html */
+  --bg:#0A0A0A;
+  --card-bg:rgba(255,255,255,0.055);
+  --card-bg-hover:rgba(255,255,255,0.085);
+  --card-border:rgba(255,255,255,0.10);
+  --txt:#FFFFFF;
+  --label:#888888;
+  --dim:#5f5f5f;
+  --cpu:#ED1C24;
+  --gpu:#00D2FF;
+  --accent:#00D2FF;
+  --good:#3DDC84;
+  --warn:#FFA940;
+  --bad:#FF4D4F;
+  --track:rgba(255,255,255,0.07);
+  --radius:16px;
+  --blur:18px;
+  --mono:'Consolas','SF Mono','Menlo','DejaVu Sans Mono',monospace;
+  --sans:'Inter','Segoe UI','Microsoft YaHei UI',system-ui,sans-serif;
+  --dots:1;
+}
+
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+body{
+  background:var(--bg); color:var(--txt); font-family:var(--sans);
+  padding:16px; overflow:hidden; -webkit-font-smoothing:antialiased;
+}
+body::before{
+  content:""; position:fixed; inset:0; z-index:0; pointer-events:none; opacity:var(--dots);
+  background:
+    radial-gradient(920px 520px at 10% 6%,  rgba(90,120,175,0.13), transparent 68%),
+    radial-gradient(720px 500px at 92% 94%, rgba(0,130,170,0.10),  transparent 68%),
+    radial-gradient(620px 420px at 72% 4%,  rgba(150,70,70,0.07),  transparent 70%),
+    radial-gradient(520px 380px at 4% 96%,  rgba(120,120,140,0.07),transparent 70%);
+}
+
+.card{
+  background:var(--card-bg);
+  backdrop-filter:blur(var(--blur)) saturate(135%);
+  -webkit-backdrop-filter:blur(var(--blur)) saturate(135%);
+  border:1px solid var(--card-border);
+  border-radius:var(--radius);
+  box-shadow:0 8px 28px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.07);
+  position:relative; overflow:hidden; contain:paint;
+  transition:background .22s ease,border-color .22s ease;
+}
+.card:hover{background:var(--card-bg-hover); border-color:rgba(255,255,255,0.14)}
+
+/* ---------- 主网格：与旧面板同构 ---------- */
+.app{
+  height:calc(100vh - 32px);
+  display:grid;
+  grid-template-columns:1.5fr 1fr;
+  grid-template-rows:52px 1fr;
+  grid-template-areas:
+    "header header"
+    "main   right";
+  gap:14px; position:relative; z-index:1;
+}
+header{grid-area:header; display:flex; align-items:center; justify-content:space-between; padding:0 4px}
+header h1{font-size:15px; font-weight:600; letter-spacing:.6px; white-space:nowrap}
+.hdr-right{display:flex; align-items:center; gap:16px; font-size:13px; color:var(--label)}
+.status{display:flex; align-items:center; gap:7px; white-space:nowrap}
+.dot{width:7px;height:7px;border-radius:50%;background:#555;transition:background .3s}
+.dot.on{background:var(--good); box-shadow:0 0 8px rgba(61,220,132,.5)}
+.dot.stale{background:var(--warn); box-shadow:0 0 8px rgba(255,169,64,.5)}
+.dot.dead{background:var(--bad); box-shadow:0 0 8px rgba(255,77,79,.5)}
+.clock{font-family:var(--mono); color:#c8c8c8; letter-spacing:.5px}
+button,select{
+  font:inherit; font-size:12.5px; color:var(--txt); background:var(--card-bg);
+  border:1px solid var(--card-border); border-radius:10px; padding:6px 13px; cursor:pointer;
+  transition:background .2s,border-color .2s;
+}
+button:hover,select:hover{background:var(--card-bg-hover)}
+button.on{border-color:var(--accent); color:var(--accent)}
+
+/* ---------- 左列 ---------- */
+main{grid-area:main; display:flex; flex-direction:column; gap:14px; min-height:0}
+
+.kpis{display:grid; grid-template-columns:repeat(4,1fr); gap:14px}
+.kpi{padding:14px 16px; display:flex; flex-direction:column; gap:6px}
+.k-label{font-size:11.5px; color:var(--label); letter-spacing:.3px; display:flex; align-items:center; white-space:nowrap}
+.accent-dot{display:inline-block; width:6px; height:6px; border-radius:50%; margin-right:7px; vertical-align:1px}
+.k-value{font-family:var(--mono); font-size:27px; font-weight:600; line-height:1.1; letter-spacing:-.5px; white-space:nowrap}
+.k-value .ku{font-size:15px; color:#777; margin-left:3px; font-weight:500}
+.k-sub{font-size:11px; color:var(--dim); font-family:var(--mono); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+
+.charts{flex:1; min-height:0; display:flex; flex-direction:column; gap:14px}
+.chart-card{flex:1; min-height:0; display:flex; flex-direction:column; padding:12px 12px 6px}
+.chart-head{display:flex; align-items:center; justify-content:space-between; padding:0 6px 6px}
+.chart-head .t{font-size:12px; color:var(--label); letter-spacing:.3px; display:flex; align-items:center}
+.chart-head .cd{display:inline-block; width:14px; height:2px; border-radius:1px; margin-right:8px}
+.chart-head .cur{font-family:var(--mono); font-size:19px; font-weight:600; color:#e8e8e8; letter-spacing:-.5px}
+.chart-head .cur span{font-size:12px; color:#777; margin-left:1px}
+.chart-body{flex:1; min-height:0; position:relative}
+.chart-body canvas{display:block; width:100%; height:100%}
+
+.bottom-row{display:grid; grid-template-columns:1.15fr 1.6fr .72fr; gap:14px; flex:none}
+.bottom-row.no-third{grid-template-columns:1.2fr 1.6fr}
+.bottom-row.only-one{grid-template-columns:1fr}
+.mini{padding:13px 16px; display:flex; flex-direction:column; gap:8px; min-height:0}
+.m-label{font-size:11.5px; color:var(--label); letter-spacing:.3px; display:flex; align-items:center; justify-content:space-between}
+.m-label .hint{color:var(--dim); font-size:10.5px; font-family:var(--mono)}
+.m-list{display:flex; flex-direction:column; gap:5px; min-height:0; overflow:hidden}
+.m-line{display:flex; justify-content:space-between; gap:10px; font-size:12.5px; font-family:var(--mono); color:#d0d0d0}
+.m-line .k{color:#666; font-family:var(--sans); font-size:11.5px; flex:none}
+.m-line .v{white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.m-main{font-size:19px; font-family:var(--mono); font-weight:600}
+.m-grid{display:grid; grid-template-columns:1fr 1fr; gap:4px 20px}
+
+/* ---------- 右列 ---------- */
+.right{grid-area:right; display:flex; flex-direction:column; gap:14px; min-height:0}
+.panel{padding:14px 16px; display:flex; flex-direction:column; gap:9px; flex:1; min-height:0}
+.p-title{font-size:12px; color:var(--label); letter-spacing:.3px; display:flex; align-items:center; white-space:nowrap}
+.p-title .cd{display:inline-block; width:14px; height:2px; border-radius:1px; margin-right:8px}
+.p-big{display:flex; align-items:baseline; gap:10px; flex-wrap:wrap}
+.p-big .num{font-family:var(--mono); font-size:58px; font-weight:700; line-height:.92; letter-spacing:-2.5px}
+.p-big .num.mid{font-size:40px; letter-spacing:-1.6px}
+.p-big .unit{font-size:12px; color:#7a7a7a; letter-spacing:2px}
+.p-metrics{display:grid; grid-template-columns:repeat(3,1fr); gap:10px}
+.p-metric .mt-label{font-size:11px; color:var(--label); margin-bottom:3px}
+.p-metric .mt-value{font-family:var(--mono); font-size:16px; font-weight:600; white-space:nowrap}
+.p-rows{display:flex; flex-direction:column; gap:6px}
+.p-row{display:flex; justify-content:space-between; align-items:baseline; font-size:12px; border-top:1px solid var(--card-border); padding-top:6px}
+.p-row:first-child{border-top:none; padding-top:0}
+.p-row .rk{color:var(--label); font-size:11.5px}
+.p-row .rv{font-family:var(--mono); font-size:12.5px}
+.bar{height:8px; border-radius:4px; background:var(--track); overflow:hidden}
+.bar > i{display:block; height:100%; border-radius:4px; width:0; transition:width .45s ease;
+  background:linear-gradient(90deg,var(--gpu),var(--txt))}
+.bar.hot > i{background:linear-gradient(90deg,var(--warn),var(--bad))}
+
+/* ---------- 诊断 ---------- */
+#diag{position:fixed; left:16px; right:16px; bottom:16px; z-index:300; max-height:44vh; overflow:auto;
+  background:var(--card-bg); backdrop-filter:blur(22px) saturate(130%);
+  -webkit-backdrop-filter:blur(22px) saturate(130%);
+  border:1px solid var(--card-border); border-radius:var(--radius); padding:14px 17px}
+#diag h3{margin:0 0 8px; font-size:13px; color:var(--warn); font-weight:600}
+#diag ul{margin:0; padding-left:18px; color:var(--label); font-size:12.5px}
+#diag li{margin:3px 0; font-family:var(--mono)}
+#diag .none{color:var(--good)}
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <header>
+    <h1>硬件监控</h1>
+    <div class="hdr-right">
+      <div class="status"><span class="dot" id="liveDot"></span><span id="srcTag">连接中…</span></div>
+      <div class="status"><span id="hostTag">--</span></div>
+      <button id="btnDiag">诊断</button>
+      
+      <div class="clock" id="clock">--:--:--</div>
+    </div>
+  </header>
+
+  <main>
+    <!-- 顶部 4 个 KPI -->
+    <section class="kpis">
+      <div class="card kpi">
+        <div class="k-label"><span class="accent-dot" style="background:var(--cpu)"></span>CPU 使用率</div>
+        <div class="k-value"><span id="kpiCpu">--</span><span class="ku">%</span></div>
+        <div class="k-sub" id="kpiCpuSub">--</div>
+      </div>
+      <div class="card kpi">
+        <div class="k-label"><span class="accent-dot" style="background:var(--gpu)"></span>GPU 使用率</div>
+        <div class="k-value"><span id="kpiGpu">--</span><span class="ku">%</span></div>
+        <div class="k-sub" id="kpiGpuSub">--</div>
+      </div>
+      <div class="card kpi">
+        <div class="k-label">内存已用 / 总量</div>
+        <div class="k-value"><span id="kpiMem">--</span><span class="ku" id="kpiMemUnit">GB</span></div>
+        <div class="k-sub" id="kpiMemSub">--</div>
+      </div>
+      <div class="card kpi">
+        <div class="k-label">显存已用 / 总量</div>
+        <div class="k-value"><span id="kpiVram">--</span><span class="ku" id="kpiVramUnit">MB</span></div>
+        <div class="k-sub" id="kpiVramSub">--</div>
+      </div>
+    </section>
+
+    <!-- 两个大折线卡 -->
+    <div class="charts">
+      <section class="card chart-card">
+        <div class="chart-head">
+          <div class="t"><i class="cd" style="background:var(--cpu)"></i>CPU 占用</div>
+          <div class="cur"><span id="cpuCur">--</span><span>%</span></div>
+        </div>
+        <div class="chart-body"><canvas id="chartCpu"></canvas></div>
+      </section>
+      <section class="card chart-card">
+        <div class="chart-head">
+          <div class="t"><i class="cd" style="background:var(--gpu)"></i>GPU 使用率</div>
+          <div class="cur"><span id="gpuCur">--</span><span>%</span></div>
+        </div>
+        <div class="chart-body"><canvas id="chartGpu"></canvas></div>
+      </section>
+    </div>
+
+    <!-- 底部横排：进程 / 磁盘·网络 / 系统 -->
+    <section class="bottom-row" id="bottomRow">
+      <div class="card mini" id="cardProc">
+        <div class="m-label"><span>进程</span><span class="hint" id="procHint"></span></div>
+        <div class="m-list" id="procList"></div>
+      </div>
+      <div class="card mini" id="cardDiskNet">
+        <div class="m-label"><span>磁盘读写 · 网络</span><span class="hint" id="dnHint"></span></div>
+        <div class="m-grid" id="dnGrid"></div>
+      </div>
+      <div class="card mini" id="cardSys">
+        <div class="m-label"><span>系统</span></div>
+        <div class="m-list" id="sysList"></div>
+      </div>
+    </section>
+  </main>
+
+  <aside class="right">
+    <div class="card panel" id="cardCpuDetail">
+      <div class="p-title"><i class="cd" style="background:var(--cpu)"></i><span id="cpuDetailTitle">CPU</span></div>
+      <div class="p-big"><span class="num" id="cpuDetailNum">--</span><span class="unit">%</span></div>
+      <div class="p-metrics" id="cpuDetailMetrics"></div>
+      <div class="p-rows" id="cpuDetailRows"></div>
+    </div>
+    <div class="card panel" id="cardGpuDetail">
+      <div class="p-title"><i class="cd" style="background:var(--gpu)"></i><span id="gpuDetailTitle">GPU</span></div>
+      <div class="p-big"><span class="num mid" id="gpuDetailNum">--</span><span class="unit">%</span></div>
+      <div class="p-metrics" id="gpuDetailMetrics"></div>
+      <div class="p-rows" id="gpuDetailRows"></div>
+    </div>
+    <div class="card panel" id="cardMemDetail">
+      <div class="p-title"><i class="cd" style="background:#7C6CFF"></i>内存</div>
+      <div class="p-big"><span class="num mid" id="memDetailNum">--</span><span class="unit" id="memDetailUnit">GB</span></div>
+      <div class="bar" id="memBar"><i></i></div>
+      <div class="p-rows" id="memDetailRows"></div>
+    </div>
+  </aside>
+
+</div>
+
+<section id="diag" hidden>
+  <h3>本机读不到的项（不是故障，是这台机器没有这个接口）</h3>
+  <ul id="diagList"></ul>
+</section>
+
+<script>
+/* ============================================================
+   骨架映射：后端给的是"卡片"，界面要的是仪表盘位置，所以这里按 metric key 取数。
+   key 一览（由后端 Metrics.cs 定义）：
+     cpu.load / cpu.freq / cpu.temp
+     mem.used / mem.pct / mem.avail
+     gpu.load / gpu.vram
+     disk.read / disk.write / disk.busy
+     net.rx / net.tx
+     sys.uptime / sys.procs / sys.cores
+   ============================================================ */
+var refreshMs = 1000;
+var M = {};                 // key -> metric 对象
+var CARD = {};              // id  -> 卡片对象
+var ROWS = {};              // id  -> rows 数组
+var HIST = { cpu: [], gpu: [] };
+var MAXPTS = 120;
+var lastOk = 0;
+
+document.getElementById('btnDiag').addEventListener('click', function () {
+  var d = document.getElementById('diag');
+  d.hidden = !d.hidden;
+  this.classList.toggle('on', !d.hidden);
+});
+
+function $(id) { return document.getElementById(id); }
+function setText(id, t) { var e = $(id); if (e) e.textContent = t; }
+
+/* 把 "2.7 GB / 12.0 GB" 拆成主数字 + 跟注 */
+function splitValue(text) {
+  if (!text) return ['--', ''];
+  var i = text.indexOf(' ');
+  if (i < 0) return [text, ''];
+  return [text.slice(0, i), text.slice(i + 1)];
+}
+/* "1.5 GB" → {n:"1.5", u:"GB"}；"43.1 %" → {n:"43.1", u:"%"}；
+   "2.8 GB / 12.0 GB" → {n:"2.8", u:"GB"}（KPI 上只放大已用，总量留给副标题） */
+function numUnit(text) {
+  if (!text) return { n: '--', u: '' };
+  var head = text.split(' / ')[0];
+  var m = /^(-?[\d.]+)\s*(.*)$/.exec(head);
+  if (m) return { n: m[1], u: m[2] || '' };
+  return { n: head, u: '' };
+}
+
+/* ---------- 每轮渲染 ---------- */
+function render(s) {
+  M = {}; CARD = {}; ROWS = {};
+  s.cards.forEach(function (c) {
+    CARD[c.id] = c; ROWS[c.id] = c.rows || [];
+    (c.metrics || []).forEach(function (m) { M[m.key] = m; });
+  });
+  if (s.refreshMs) refreshMs = s.refreshMs;
+
+  var sys = CARD['system'];
+  setText('hostTag', (s.host || '本机') + (sys && sys.sub ? ' · ' + sys.sub : ''));
+
+  // ---- 4 个 KPI ----
+  kpi('kpiCpu', 'kpiCpuSub', M['cpu.load'], function (m) {
+    return cpuSub();
+  });
+  kpi('kpiGpu', 'kpiGpuSub', M['gpu.load'], function () {
+    var g = CARD['gpu'];
+    return g && g.sub ? shortName(g.sub) : '--';
+  });
+  kpi('kpiMem', 'kpiMemSub', M['mem.pct'], function () {
+    var mem = CARD['mem'];
+    var total = rowValue(mem, '物理总量');
+    return total ? '总量 ' + total : '--';
+  }, M['mem.used']);
+  kpi('kpiVram', 'kpiVramSub', M['gpu.vram'], function () {
+    var v = M['gpu.vram'];
+    return v && v.text && v.text.indexOf(' / ') > 0 ? '总量 ' + v.text.split(' / ')[1] : '--';
+  }, null, true);
+
+  // ---- 折线历史 ----
+  pushHist('cpu', M['cpu.load']);
+  pushHist('gpu', M['gpu.load']);
+
+  setText('cpuCur', M['cpu.load'] ? trimNum(M['cpu.load'].value) : '--');
+  setText('gpuCur', M['gpu.load'] ? trimNum(M['gpu.load'].value) : '--');
+  drawChart($('chartCpu'), HIST.cpu, cssVar('--cpu'), 100);
+  drawChart($('chartGpu'), HIST.gpu, cssVar('--gpu'), 100);
+
+  // ---- 右列：CPU / GPU / 内存 详情 ----
+  renderCpuDetail();
+  renderGpuDetail();
+  renderMemDetail();
+
+  // ---- 底部：进程 / 磁盘·网络 / 系统 ----
+  renderProc();
+  renderDiskNet();
+  renderSys();
+
+  renderDiag(s.diag || []);
+}
+
+function cssVar(name) {
+  return (getComputedStyle(document.documentElement).getPropertyValue(name) || '').trim() || '#00D2FF';
+}
+function trimNum(v) {
+  if (v === null || v === undefined || isNaN(v)) return '--';
+  return (Math.round(v * 10) / 10).toFixed(1);
+}
+function shortName(s) {
+  if (!s) return '--';
+  var i = s.indexOf(' + ');
+  return i > 0 ? s.slice(0, i) : s;
+}
+function rowValue(cardObj, label) {
+  if (!cardObj) return null;
+  var rs = ROWS[cardObj.id] || [];
+  for (var i = 0; i < rs.length; i++) if (rs[i].label === label) return rs[i].value;
+  return null;
+}
+
+/** KPI 渲染：主数字取 valueMetric，单位取自文本，副注由 subFn 生成 */
+function kpi(numId, subId, metric, subFn, overrideMetric) {
+  var src = overrideMetric || metric;
+  var n = '--', u = '';
+  if (src && src.ok !== false && src.text) {
+    var nu = numUnit(src.text);
+    n = nu.n; u = nu.u;
+  }
+  setText(numId, n);
+  if (subId) setText(subId, subFn ? subFn(metric) : '--');
+  // 单位元素（KPI 里 .ku 是固定的 %/GB/MB），这里按实际单位改掉
+  var el = $(numId);
+  if (el && el.nextElementSibling && el.nextElementSibling.className === 'ku') {
+    el.nextElementSibling.textContent = u || '';
+  }
+}
+
+function cpuSub() {
+  var f = M['cpu.freq'];
+  var c = CARD['cpu'];
+  var name = c && c.sub ? shortName(c.sub) : '';
+  var parts = [];
+  if (name) parts.push(name);
+  if (f) parts.push('频率 ' + f.text);
+  return parts.join(' · ') || '--';
+}
+
+function pushHist(which, m) {
+  if (!m || m.value === null || m.value === undefined || isNaN(m.value)) return;
+  HIST[which].push(m.value);
+  while (HIST[which].length > MAXPTS) HIST[which].shift();
+}
+
+/* ---------- 大折线：网格 + 渐变填充 ---------- */
+function drawChart(cv, pts, color, maxFixed) {
+  if (!cv) return;
+  var dpr = window.devicePixelRatio || 1;
+  var w = cv.clientWidth, h = cv.clientHeight;
+  if (!w || !h) return;
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+  }
+  var g = cv.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+
+  // 横向网格线
+  g.strokeStyle = 'rgba(127,127,127,0.16)';
+  g.lineWidth = 1;
+  for (var k = 0; k <= 4; k++) {
+    var y = Math.round((h - 1) * k / 4) + 0.5;
+    g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke();
+  }
+  if (!pts.length) return;
+
+  var max = maxFixed || 100;
+  // 铺满宽度：刚打开时历史只有几个点，若按固定容量从右往左画，
+  // 画面会是一小段挤在最右边（截图时就是这样）；铺满才有"有数据"的样子。
+  var step = pts.length > 1 ? w / (pts.length - 1) : 0;
+  var x0 = 0;
+
+  g.beginPath();
+  for (var i = 0; i < pts.length; i++) {
+    var x = x0 + i * step;
+    var y = h - 2 - (Math.min(pts[i], max) / max) * (h - 4);
+    if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
+  }
+  g.strokeStyle = color; g.lineWidth = 1.6; g.lineJoin = 'round'; g.stroke();
+  g.lineTo(x0 + (pts.length - 1) * step, h); g.lineTo(x0, h); g.closePath();
+  var grad = g.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, color); grad.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = grad; g.globalAlpha = 0.22; g.fill(); g.globalAlpha = 1;
+}
+
+/* ---------- 右列详情 ---------- */
+function renderCpuDetail() {
+  var load = M['cpu.load'], freq = M['cpu.freq'], temp = M['cpu.temp'];
+  var c = CARD['cpu'];
+  setText('cpuDetailTitle', 'CPU' + (c && c.sub ? ' · ' + shortName(c.sub) : ''));
+  setText('cpuDetailNum', load ? load.text.replace(/\s*%$/, '') : '--');
+
+  var mm = $('cpuDetailMetrics');
+  mm.innerHTML = '';
+  // 只放"行里没有"的两项：频率与温度（标称频率/逻辑核数放在下面的行里，避免一张卡里重复两遍）
+  addMetric(mm, '频率', freq ? freq.text : '--');
+  addMetric(mm, '温度', temp ? temp.text : '--');
+
+  var rr = $('cpuDetailRows');
+  rr.innerHTML = '';
+  (ROWS['cpu'] || []).forEach(function (r) { addRow(rr, r.label, r.value); });
+}
+
+function renderGpuDetail() {
+  var g = CARD['gpu'];
+  setText('gpuDetailTitle', 'GPU' + (g && g.sub ? ' · ' + shortName(g.sub) : ''));
+  setText('gpuDetailNum', M['gpu.load'] ? M['gpu.load'].text.replace(/\s*%$/, '') : '--');
+
+  var mm = $('gpuDetailMetrics');
+  mm.innerHTML = '';
+  var vram = M['gpu.vram'];
+  addMetric(mm, '显存占用', vram ? vram.text : '--');
+  addMetric(mm, '3D 占用', M['gpu.load'] ? M['gpu.load'].text : '--');
+
+  var rr = $('gpuDetailRows');
+  rr.innerHTML = '';
+  (ROWS['gpu'] || []).forEach(function (r) { addRow(rr, r.label, r.value); });
+}
+
+function renderMemDetail() {
+  var pct = M['mem.pct'], used = M['mem.used'];
+  setText('memDetailNum', used ? numUnit(used.text).n : '--');
+  var bar = $('memBar');
+  if (pct && pct.bar !== null && !isNaN(pct.bar)) {
+    bar.style.display = '';
+    bar.className = pct.bar >= 85 ? 'bar hot' : 'bar';
+    bar.firstElementChild.style.width = Math.max(0, Math.min(100, pct.bar)) + '%';
+  } else {
+    bar.style.display = 'none';
+  }
+  var rr = $('memDetailRows');
+  rr.innerHTML = '';
+  addRow(rr, '占用率', pct ? pct.text : '--');
+  (ROWS['mem'] || []).forEach(function (r) { addRow(rr, r.label, r.value); });
+}
+
+function addMetric(host, label, value) {
+  var d = document.createElement('div');
+  d.className = 'p-metric';
+  var l = document.createElement('div'); l.className = 'mt-label'; l.textContent = label;
+  var v = document.createElement('div'); v.className = 'mt-value'; v.textContent = value;
+  d.appendChild(l); d.appendChild(v); host.appendChild(d);
+}
+function addRow(host, label, value) {
+  var d = document.createElement('div');
+  d.className = 'p-row';
+  var l = document.createElement('span'); l.className = 'rk'; l.textContent = label;
+  var v = document.createElement('span'); v.className = 'rv'; v.textContent = value;
+  d.appendChild(l); d.appendChild(v); host.appendChild(d);
+}
+
+/* ---------- 底部三张 ---------- */
+function renderProc() {
+  var c = CARD['proc'];
+  var rows = ROWS['proc'] || [];
+  var card = $('cardProc');
+  if (!c || !rows.length) { card.style.display = 'none'; relayoutBottom(); return; }
+  card.style.display = '';
+  setText('procHint', c.sub || '');
+  var box = $('procList');
+  box.innerHTML = '';
+  rows.forEach(function (r) {
+    var d = document.createElement('div');
+    d.className = 'm-line';
+    var k = document.createElement('span'); k.className = 'k'; k.textContent = r.label;
+    k.style.fontFamily = 'var(--mono)'; k.style.color = 'var(--txt)';
+    var v = document.createElement('span'); v.className = 'v'; v.textContent = r.value;
+    d.appendChild(k); d.appendChild(v); box.appendChild(d);
+  });
+  relayoutBottom();
+}
+
+function renderDiskNet() {
+  var card = $('cardDiskNet');
+  var items = [];
+  ['disk.read', 'disk.write', 'net.rx', 'net.tx'].forEach(function (key) {
+    if (M[key]) items.push([labelOf(key), M[key].text]);
+  });
+  if (!items.length) { card.style.display = 'none'; relayoutBottom(); return; }
+  card.style.display = '';
+  var busy = M['disk.busy'];
+  setText('dnHint', busy ? '磁盘活动 ' + busy.text : '');
+  var box = $('dnGrid');
+  box.innerHTML = '';
+  items.forEach(function (it) {
+    var d = document.createElement('div');
+    d.className = 'm-line';
+    var k = document.createElement('span'); k.className = 'k'; k.textContent = it[0];
+    var v = document.createElement('span'); v.className = 'v'; v.textContent = it[1];
+    d.appendChild(k); d.appendChild(v); box.appendChild(d);
+  });
+  relayoutBottom();
+}
+
+function labelOf(key) {
+  var m = { 'disk.read': '读取', 'disk.write': '写入', 'net.rx': '下载', 'net.tx': '上传' };
+  return m[key] || key;
+}
+
+function renderSys() {
+  var c = CARD['system'];
+  var rows = ROWS['system'] || [];
+  var card = $('cardSys');
+  if (!c || (!rows.length && !M['sys.uptime'])) { card.style.display = 'none'; relayoutBottom(); return; }
+  card.style.display = '';
+  var box = $('sysList');
+  box.innerHTML = '';
+  if (M['sys.uptime']) {
+    var d0 = document.createElement('div');
+    d0.className = 'm-line';
+    d0.innerHTML = '<span class="k">开机</span><span class="v">' + M['sys.uptime'].text + '</span>';
+    box.appendChild(d0);
+  }
+  if (M['sys.procs']) {
+    var d1 = document.createElement('div');
+    d1.className = 'm-line';
+    d1.innerHTML = '<span class="k">进程</span><span class="v">' + M['sys.procs'].text + '</span>';
+    box.appendChild(d1);
+  }
+  rows.forEach(function (r) {
+    if (r.label === '主机名') return;
+    var d = document.createElement('div');
+    d.className = 'm-line';
+    var k = document.createElement('span'); k.className = 'k'; k.textContent = r.label;
+    var v = document.createElement('span'); v.className = 'v'; v.textContent = r.value;
+    d.appendChild(k); d.appendChild(v); box.appendChild(d);
+  });
+  relayoutBottom();
+}
+
+/** 底部是 3 列网格；有卡片被隐藏时要改列数，否则会留一个空洞 */
+function relayoutBottom() {
+  var row = $('bottomRow');
+  var visible = 0;
+  ['cardProc', 'cardDiskNet', 'cardSys'].forEach(function (id) {
+    if ($(id).style.display !== 'none') visible++;
+  });
+  row.className = 'bottom-row' + (visible === 2 ? ' no-third' : (visible <= 1 ? ' only-one' : ''));
+}
+
+/* ---------- 诊断 ---------- */
+function renderDiag(diag) {
+  var list = $('diagList');
+  list.innerHTML = '';
+  if (!diag.length) {
+    var li = document.createElement('li'); li.className = 'none'; li.textContent = '全部指标都读到了。';
+    list.appendChild(li); return;
+  }
+  diag.forEach(function (d) {
+    var li = document.createElement('li');
+    li.textContent = (d.label ? (d.card + ' / ' + d.label) : d.card) + ' —— ' + d.note;
+    list.appendChild(li);
+  });
+}
+
+/* ---------- 时钟与轮询 ---------- */
+function tickClock() {
+  var d = new Date();
+  var p = function (n) { return (n < 10 ? '0' : '') + n; };
+  setText('clock', p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()));
+}
+tickClock();
+setInterval(tickClock, 1000);
+
+function setLive(cls, text) {
+  $('liveDot').className = 'dot' + (cls ? ' ' + cls : '');
+  if (text) setText('srcTag', text);
+}
+
+function poll() {
+  fetch('/api/state', { cache: 'no-store' }).then(function (r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }).then(function (s) {
+    render(s);
+    setLive('on', '实时数据');
+    lastOk = Date.now();
+  }).catch(function () {
+    if (lastOk && Date.now() - lastOk > 4000) setLive('dead', '连接中断');
+    else setLive('stale', '连接中…');
+  }).then(function () {
+    setTimeout(poll, refreshMs);
+  });
+}
+poll();
+
+window.addEventListener('resize', function () {
+  drawChart($('chartCpu'), HIST.cpu, cssVar('--cpu'), 100);
+  drawChart($('chartGpu'), HIST.gpu, cssVar('--gpu'), 100);
+});
+
+/* ---------- 550C 开机片头（可选；取自 dsh-550c-boot 的移植版） ----------
+   加载失败就静默跳过 —— 片头是装饰，绝不能影响看数据。想关掉：地址后加 ?boot=0 */
+(function boot() {
+  if (location.search.indexOf('boot=0') >= 0) return;
+  window.$ = window.$ || function (id) { return document.getElementById(id); };
+
+  fetch('/boot-550c.css', { cache: 'force-cache' }).then(function (r) { return r.text(); }).then(function (css) {
+    var st = document.createElement('style');
+    st.textContent = css;
+    document.head.appendChild(st);
+    return fetch('/boot-550c.html', { cache: 'force-cache' });
+  }).then(function (r) { return r.text(); }).then(function (html) {
+    var holder = document.createElement('div');
+    holder.innerHTML = html;
+    while (holder.firstChild) document.body.insertBefore(holder.firstChild, document.body.firstChild);
+    var sc = document.createElement('script');
+    sc.src = '/boot-550c.js';
+    sc.onload = function () {
+      try { if (typeof playBootAnim === 'function') playBootAnim(1); } catch (e) { }
+    };
+    document.body.appendChild(sc);
+  }).catch(function () { /* 片头加载失败：什么都不做 */ });
+})();
+</script>
+</body>
+</html>

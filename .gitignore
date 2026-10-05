@@ -1,0 +1,38 @@
+# ---- 构建产物 ----
+bin/
+obj/
+build/
+dist/
+*.pdb
+*.dll
+
+# ---- 调试与验证残留 ----
+log/
+logs/
+*.log
+*.err.log
+*.out.log
+udd-*/
+edge-tmp/
+edge-*/
+probe/
+screenshots/
+*.png
+*.jpg
+*.bak
+*.bak-*
+*.tmp
+
+# ---- 编辑器 / 系统 ----
+.vs/
+.idea/
+.vscode/
+Thumbs.db
+desktop.ini
+__pycache__/
+
+# ---- 敏感信息（绝对不要提交）----
+*.token
+.env
+.credentials*
+hosts

@@ -1,0 +1,62 @@
+/* 550C 开机动画 · 样式
+ * 摘自 GameHud 的 web/monitor.html 第 221-277 行（原样摘出，未改写）。
+ * 动画与 SVG 原稿：Voidpoket；插件工程与移植：Ziyang Song (dsh-550c-boot, MIT)。
+ * 本文件由 tools/extract-web.mjs 生成，请勿手工编辑；改动画请改源文件后重跑脚本。
+ */
+  /* ---------- 开机动画：550C logo 逐笔书写 ----------
+     动画与 SVG 原稿由 Voidpocket（github.com/Voidpoket）提供，
+     移植自 DSH 插件 dsh-550c-boot（github.com/yannicksong0106/dsh-550c-boot，MIT）。
+     时间轴：250ms 起，每个字形间隔 300ms 擦出（0.6s 过渡）；2400ms 淡入底部文字；
+     2450ms 起发光呼吸；再停一下淡出。整段约 4 秒，只在页面加载时播。 */
+  #c550Boot{position:fixed;inset:0;z-index:400;background:#000;display:none;transition:opacity 1.6s ease,background 1.6s ease}
+  #c550Boot.c550-fade{opacity:0;pointer-events:none}
+  #c550Boot::before{
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:2;
+    background:repeating-linear-gradient(to bottom,rgba(255,255,255,.025) 0,rgba(255,255,255,.025) 1px,transparent 1px,transparent 4px);
+  }
+  .c550-stage{position:relative;width:100%;height:100%;display:flex;align-items:center;justify-content:center;z-index:1}
+  .c550-stage svg{width:min(680px,90vw);height:auto;overflow:visible}
+  .c550-w{fill:#fff;stroke:none}
+  .c550-r{fill:#ff2d2d;stroke:none}
+  #c550Logo.c550-finished .c550-w{animation:c550GlowW 2.6s ease-in-out infinite}
+  #c550Logo.c550-finished .c550-r{animation:c550GlowR 2.6s ease-in-out infinite}
+  @keyframes c550GlowW{0%,100%{filter:drop-shadow(0 0 6px rgba(255,255,255,.5))}50%{filter:drop-shadow(0 0 14px rgba(255,255,255,.9))}}
+  @keyframes c550GlowR{0%,100%{filter:drop-shadow(0 0 8px rgba(255,45,45,.6))}50%{filter:drop-shadow(0 0 18px rgba(255,45,45,1))}}
+  .c550-text{
+    position:absolute;left:0;right:0;bottom:12%;text-align:center;
+    color:rgba(255,255,255,.35);font-family:var(--mono);font-size:12px;
+    letter-spacing:.4em;padding-left:.4em;opacity:0;
+  }
+  .c550-text.c550-show{animation:c550FadeIn .6s ease forwards}
+  .c550-text .c550-cursor{
+    display:inline-block;width:6px;height:12px;background:#fff;
+    margin-left:8px;vertical-align:-2px;animation:c550Blink 1s steps(1) infinite;
+  }
+  /* 动画收尾：黑底淡掉、字形压暗 —— 用一次过渡完成，不要"闪一下" */
+  #c550Boot.c550-toWater{background:transparent}
+  #c550Boot.c550-toWater .c550-w{opacity:.15;transition:opacity 1.6s ease}
+  #c550Boot.c550-toWater .c550-r{opacity:.18;transition:opacity 1.6s ease}
+    #c550Boot.c550-toWater .c550-stage svg{filter:blur(8px);transition:filter 1.6s ease}
+  #c550Boot.c550-toWater .c550-text{opacity:0;animation:none;transition:opacity 1.6s ease}
+  /* 背光水印：动画播完就停在这个状态 —— 字形留在原地当面板的底纹。
+     压在 .app（z-index:1）下面，不挡鼠标；卡片上的毛玻璃会把它糊成一片柔光。 */
+  #c550Boot.c550-watermark{
+    /* 顶层全局水印：z-index 要高于面板内容(.app=1)和报告页(.report-view=200)。
+       以前埋在背景层(0)，结果被卡片的 backdrop-filter 挡得只剩缝隙里一点，
+       看着就跟没有一样 —— GPU 合成下毛玻璃不采样下层的水印层。 */
+    display:block;background:transparent;z-index:260;pointer-events:none;opacity:1;
+  }
+  #c550Boot.c550-watermark::before{display:none}          /* 水印态不要扫描线，否则整屏都是纹 */
+  #c550Boot.c550-watermark .c550-stage svg{filter:blur(8px)}   /* 轻微柔化，更像背光 */
+  #c550Boot.c550-watermark .c550-w{opacity:.15;animation:none}
+  #c550Boot.c550-watermark .c550-r{opacity:.18;animation:none}
+  #c550Boot.c550-watermark .c550-text{display:none}       /* 文字不留 */
+  @keyframes c550FadeIn{to{opacity:1}}
+  @keyframes c550Blink{0%,49%{opacity:1}50%,100%{opacity:0}}
+  /* 背光水印：独立的固定层，跟开机动画解耦 —— 不依赖“动画收尾切水印”那套状态机。
+     z-index:0 压在面板内容(.app=1)之下；缝隙里能看到轮廓，卡片区被毛玻璃再柔化一层。 */
+  #c550Bg{
+    position:fixed;inset:0;z-index:0;pointer-events:none;
+    display:flex;align-items:center;justify-content:center;
+  }
+  #c550Bg svg{width:min(680px,90vw);height:auto;filter:blur(8px);opacity:.55}
